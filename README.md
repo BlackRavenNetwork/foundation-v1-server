@@ -1,5 +1,7 @@
 # Foundation Server
 
+> **BlackRaven V2 pool:** This fork includes KawPoW / segwit / founder-reward patches for [BlackRaven](https://github.com/BlackRavenNetwork/BlackRaven-V2). See [docs/BLACKRAVEN.md](docs/BLACKRAVEN.md) — `npm install` applies the patch automatically.
+
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/blinkhash/foundation-server.svg?style=flat-square)](https://codecov.io/gh/blinkhash/foundation-server/)
 [![Foundation CI](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)

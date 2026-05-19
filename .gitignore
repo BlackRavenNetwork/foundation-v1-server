@@ -6,6 +6,9 @@ configs/main/*
 configs/pools/*
 !configs/main/example.js
 !configs/pools/example.js
+!configs/pools/blackraven.example.js
+patches/foundation-stratum/
+pool.log
 certificates/*
 !certificates/README.md
 coverage/

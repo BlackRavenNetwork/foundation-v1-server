@@ -1,0 +1,249 @@
+diff --git a/node_modules/foundation-stratum/scripts/main/manager.js b/node_modules/foundation-stratum/scripts/main/manager.js
+index 931c5b2..3f7a456 100644
+--- a/node_modules/foundation-stratum/scripts/main/manager.js
++++ b/node_modules/foundation-stratum/scripts/main/manager.js
+@@ -174,7 +174,9 @@ const Manager = function(poolConfig, portalConfig) {
+ 
+       // Generate Coinbase Buffer
+       coinbaseBuffer = job.serializeCoinbase(extraNonce1Buffer);
+-      coinbaseHash = job.coinbaseHasher(coinbaseBuffer);
++      coinbaseHash = job.poolConfig.primary.coin.segwit ?
++        utils.coinbaseTxHash(coinbaseBuffer) :
++        job.coinbaseHasher(coinbaseBuffer);
+       merkleRoot = job.merkle.withFirst(coinbaseHash);
+ 
+       // Start Generating Block Hash
+diff --git a/node_modules/foundation-stratum/scripts/main/template.js b/node_modules/foundation-stratum/scripts/main/template.js
+index 00ebafb..12e22a0 100644
+--- a/node_modules/foundation-stratum/scripts/main/template.js
++++ b/node_modules/foundation-stratum/scripts/main/template.js
+@@ -247,7 +247,9 @@ const Template = function(poolConfig, rpcData, jobId, extraNoncePlaceholder, aux
+ 
+       // Generate Coinbase Buffer
+       coinbaseBuffer = _this.serializeCoinbase(extraNonce1Buffer);
+-      coinbaseHash = _this.coinbaseHasher(coinbaseBuffer);
++      coinbaseHash = _this.poolConfig.primary.coin.segwit ?
++        utils.coinbaseTxHash(coinbaseBuffer) :
++        _this.coinbaseHasher(coinbaseBuffer);
+       merkleRoot = _this.merkle.withFirst(coinbaseHash);
+ 
+       // Generate Block Header Hash
+diff --git a/node_modules/foundation-stratum/scripts/main/transactions.js b/node_modules/foundation-stratum/scripts/main/transactions.js
+index 5284e9a..6840e66 100644
+--- a/node_modules/foundation-stratum/scripts/main/transactions.js
++++ b/node_modules/foundation-stratum/scripts/main/transactions.js
+@@ -4,6 +4,7 @@
+  *
+  */
+ 
++const crypto = require('crypto');
+ const utils = require('./utils');
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -45,12 +46,27 @@ const Transactions = function() {
+       utils.packUInt32LE(rpcData.curtime) :
+       Buffer.from([]);
+ 
+-    let scriptSig = Buffer.concat([
+-      utils.serializeNumber(rpcData.height),
+-      coinbaseAux,
+-      utils.serializeNumber(Date.now() / 1000 | 0),
+-      Buffer.from([extraNoncePlaceholder.length]),
+-    ]);
++    const miningAlgorithm = poolConfig.primary.coin.algorithms.mining;
++    const useSegwit = poolConfig.primary.coin.segwit &&
++      rpcData.default_witness_commitment !== undefined;
++    const witnessNonce = useSegwit ? crypto.randomBytes(32) : null;
++
++    let scriptSig;
++    if (miningAlgorithm === 'kawpow' || miningAlgorithm === 'firopow') {
++      scriptSig = Buffer.concat([
++        utils.kawpowHeightScript(rpcData.height),
++        coinbaseAux,
++        utils.serializeNumber(Date.now() / 1000 | 0),
++        Buffer.from([extraNoncePlaceholder.length]),
++      ]);
++    } else {
++      scriptSig = Buffer.concat([
++        utils.serializeNumber(rpcData.height),
++        coinbaseAux,
++        utils.serializeNumber(Date.now() / 1000 | 0),
++        Buffer.from([extraNoncePlaceholder.length]),
++      ]);
++    }
+ 
+     if (auxMerkle && poolConfig.auxiliary && poolConfig.auxiliary.enabled) {
+       scriptSig = Buffer.concat([
+@@ -63,8 +79,10 @@ const Transactions = function() {
+     }
+ 
+     // Build First Part of Generation Transaction
++    const segwitMarker = useSegwit ? Buffer.from([0x00, 0x01]) : Buffer.from([]);
+     const p1 = Buffer.concat([
+       utils.packUInt32LE(txVersion),
++      segwitMarker,
+       txTimestamp,
+       utils.varIntBuffer(1),
+       utils.uint256BufferFromHash(txInPrevOutHash),
+@@ -190,21 +208,25 @@ const Transactions = function() {
+     }
+ 
+     // Handle Secondary Transactions
+-    let founderReward, founderScript;
++    let founderReward, founderScript, founderOutput;
+     switch (poolConfig.primary.coin.rewards.type) {
+ 
+-    // RTM-Based Transactions
++    // RTM / BlackRaven founder payment (GBT founder.script)
+     case 'raptoreum':
+       if (rpcData.founder_payments_started && rpcData.founder) {
+         founderReward = rpcData.founder.amount;
+-        founderScript = utils.addressToScript(rpcData.founder.payee, network);
++        if (rpcData.founder.script) {
++          founderScript = Buffer.from(rpcData.founder.script, 'hex');
++        } else {
++          founderScript = utils.addressToScript(rpcData.founder.payee, network);
++        }
+         reward -= founderReward;
+         rewardToPool -= founderReward;
+-        txOutputBuffers.push(Buffer.concat([
++        founderOutput = Buffer.concat([
+           utils.packUInt64LE(founderReward),
+           utils.varIntBuffer(founderScript.length),
+           founderScript,
+-        ]));
++        ]);
+       }
+       break;
+ 
+@@ -254,33 +276,42 @@ const Transactions = function() {
+     reward -= recipientTotal;
+     rewardToPool -= recipientTotal;
+ 
+-    // Handle Pool Transaction
+-    txOutputBuffers.unshift(Buffer.concat([
+-      utils.packUInt64LE(rewardToPool),
+-      utils.varIntBuffer(poolAddressScript.length),
+-      poolAddressScript
+-    ]));
++  // Build outputs: pool, founder, smartnode/masternode/..., witness commitment
++    const orderedOutputs = [
++      Buffer.concat([
++        utils.packUInt64LE(rewardToPool),
++        utils.varIntBuffer(poolAddressScript.length),
++        poolAddressScript,
++      ]),
++    ];
++    if (founderOutput) {
++      orderedOutputs.push(founderOutput);
++    }
++    orderedOutputs.push(...txOutputBuffers);
+ 
+-    // Handle Witness Commitment
+-    if (rpcData.default_witness_commitment !== undefined) {
+-      const witness_commitment = Buffer.from(rpcData.default_witness_commitment, 'hex');
+-      txOutputBuffers.push(Buffer.concat([
++    let witnessSection = Buffer.from([]);
++    if (useSegwit) {
++      const witnessRoot = utils.witnessMerkleRoot(rpcData.transactions);
++      const witnessCommitment = utils.buildWitnessCommitment(witnessRoot, witnessNonce);
++      orderedOutputs.push(Buffer.concat([
+         utils.packUInt64LE(0),
+-        utils.varIntBuffer(witness_commitment.length),
+-        witness_commitment
++        utils.varIntBuffer(witnessCommitment.length),
++        witnessCommitment,
+       ]));
++      witnessSection = utils.buildCoinbaseWitness(witnessNonce);
+     }
+ 
+     // Combine Output Transactions
+     const outputTransactions = Buffer.concat([
+-      utils.varIntBuffer(txOutputBuffers.length),
+-      Buffer.concat(txOutputBuffers)
++      utils.varIntBuffer(orderedOutputs.length),
++      Buffer.concat(orderedOutputs),
+     ]);
+ 
+     // Build Second Part of Generation Transaction
+     let p2 = Buffer.concat([
+       utils.packUInt32LE(txInSequence),
+       outputTransactions,
++      witnessSection,
+       utils.packUInt32LE(txLockTime),
+     ]);
+ 
+diff --git a/node_modules/foundation-stratum/scripts/main/utils.js b/node_modules/foundation-stratum/scripts/main/utils.js
+index c56cc78..9a9627a 100644
+--- a/node_modules/foundation-stratum/scripts/main/utils.js
++++ b/node_modules/foundation-stratum/scripts/main/utils.js
+@@ -224,6 +224,69 @@ exports.reverseHex = function(hex) {
+   return exports.reverseBuffer(Buffer.from(hex, 'hex')).toString('hex');
+ };
+ 
++// BlackRaven / KawPoW coinbase height (OP_n + 0x01 0x01), not BIP34 serializeNumber
++exports.kawpowHeightScript = function(height) {
++  let heightPart;
++  if (height >= 1 && height <= 16) {
++    heightPart = Buffer.from([0x50 + height]);
++  } else {
++    // BIP34 height push for heights above OP_16
++    heightPart = exports.serializeNumber(height);
++  }
++  return Buffer.concat([heightPart, Buffer.from([0x01, 0x01])]);
++};
++
++// Witness merkle root for block template (coinbase witness hash = 0)
++exports.witnessMerkleRoot = function(transactions) {
++  let leaves = [Buffer.alloc(32, 0)];
++  if (transactions && transactions.length > 0) {
++    transactions.forEach((tx) => {
++      const hash = tx.hash || tx.txid;
++      if (hash) {
++        leaves.push(exports.uint256BufferFromHash(hash));
++      }
++    });
++  }
++  while (leaves.length > 1) {
++    if (leaves.length % 2 !== 0) {
++      leaves.push(leaves[leaves.length - 1]);
++    }
++    const next = [];
++    for (let i = 0; i < leaves.length; i += 2) {
++      next.push(exports.sha256d(Buffer.concat([leaves[i], leaves[i + 1]])));
++    }
++    leaves = next;
++  }
++  return leaves[0];
++};
++
++// BIP141 witness commitment output (SHA256d(witness_root || nonce))
++exports.buildWitnessCommitment = function(witnessRoot, witnessNonce) {
++  const commitment = exports.sha256d(Buffer.concat([witnessRoot, witnessNonce]));
++  return Buffer.concat([
++    Buffer.from([0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]),
++    commitment,
++  ]);
++};
++
++// Coinbase witness stack (32-byte nonce)
++exports.buildCoinbaseWitness = function(witnessNonce) {
++  return Buffer.concat([
++    Buffer.from([0x01]),
++    Buffer.from([0x20]),
++    witnessNonce,
++  ]);
++};
++
++// Segwit coinbase txid for header merkle (excludes witness)
++exports.coinbaseTxHash = function(coinbaseBuffer) {
++  try {
++    return bitcoin.Transaction.fromBuffer(coinbaseBuffer).getHash();
++  } catch (err) {
++    return exports.sha256d(coinbaseBuffer);
++  }
++};
++
+ // Serialize Height/Date Input
+ exports.serializeNumber = function(n) {
+   if (n >= 1 && n <= 16) {

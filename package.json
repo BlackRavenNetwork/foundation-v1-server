@@ -13,9 +13,9 @@
     "litecoin",
     "scrypt"
   ],
-  "homepage": "https://github.com/blinkhash/foundation-server",
+  "homepage": "https://github.com/BlackRavenNetwork/foundation-v1-server",
   "bugs": {
-    "url": "https://github.com/blinkhash/foundation-server/issues"
+    "url": "https://github.com/BlackRavenNetwork/foundation-v1-server/issues"
   },
   "license": "GPL-2.0",
   "author": {
@@ -38,12 +38,13 @@
     "clean": "eslint . --ext .js --ignore-pattern node_modules/",
     "clean:fix": "eslint . --ext .js --fix --ignore-pattern node_modules/",
     "test": "jest --coverage",
-    "deploy": "npm run clean:fix && npm run test"
+    "deploy": "npm run clean:fix && npm run test",
+    "postinstall": "patch-package"
   },
   "contributors": [],
   "repository": {
     "type": "git",
-    "url": "https://github.com/blinkhash/foundation-server.git"
+    "url": "https://github.com/BlackRavenNetwork/foundation-v1-server.git"
   },
   "dependencies": {
     "apicache": "^1.6.3",
@@ -66,6 +67,7 @@
     "jest": "^26.6.3",
     "mockdate": "^3.0.5",
     "nock": "^13.0.10",
+    "patch-package": "^8.0.1",
     "redis-mock": "^0.56.3"
   },
   "engines": {
