@@ -1315,7 +1315,7 @@ describe('Test payments functionality', () => {
     const daemon = new Stratum.daemon([poolConfig.primary.payments.daemon], () => {});
     const config = poolPayments.poolConfigs['Pool1'];
     const expected = [
-      ["zadd", "Pool1:payments:primary:records", 1637878085, "{\"time\":1637878085886,\"paid\":117.12181095,\"miners\":3,\"transaction\":\"transactionID\"}"]];
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":117.12181095,"miners":3,"transaction":"transactionID"}']];
     poolPayments.handleSending(daemon, config, 'primary', [mockPayments.rounds, mockPayments.workers1], (error, results) => {
       expect(error).toBe(null);
       expect(results.length).toBe(3);
