@@ -786,6 +786,28 @@ exports.mockSendMany = function() {
     );
 };
 
+exports.mockSendManyTransactionTooLarge = function() {
+  let calls = 0;
+  nock('http://127.0.0.1:8332')
+    .persist()
+    .post('/', body => body.method === 'sendmany')
+    .reply(200, () => {
+      calls += 1;
+      if (calls === 1) {
+        return JSON.stringify({
+          id: 'nocktest',
+          result: null,
+          error: { code: -6, message: 'Transaction too large' },
+        });
+      }
+      return JSON.stringify({
+        id: 'nocktest',
+        result: `transactionID${ calls - 1 }`,
+        error: null,
+      });
+    });
+};
+
 exports.mockSendManyError1 = function() {
   nock('http://127.0.0.1:8332')
     .persist()

@@ -645,14 +645,40 @@ const PoolPayments = function (logger, client) {
   this.handleSending = function(daemon, config, blockType, data, callback) {
 
     let totalSent = 0;
-    const amounts = {};
     const commands = [];
+    const payments = [];
     const dateNow = Date.now();
 
     const rounds = data[0];
     const workers = data[1];
     const pool = config.name;
     const processingConfig = blockType === 'primary' ? config.primary : config.auxiliary;
+
+    const logPaymentError = function(rpcTracking, error) {
+      logger.warning('Payments', pool, rpcTracking);
+      if (error && error.code === -5) {
+        logger.error('Payments', pool, `Error sending payments ${ JSON.stringify(error)}`);
+      } else if (error && error.code === -6) {
+        logger.error('Payments', pool, `Insufficient funds for payments: ${ JSON.stringify(error)}`);
+      } else {
+        logger.error('Payments', pool, `Error sending payments ${ JSON.stringify(error)}`);
+      }
+    };
+
+    const isTransactionTooLarge = function(error) {
+      return error &&
+        error.code === -6 &&
+        error.message &&
+        error.message.toLowerCase().indexOf('transaction too large') !== -1;
+    };
+
+    const buildAmounts = function(paymentBatch) {
+      const amounts = {};
+      paymentBatch.forEach((payment) => {
+        amounts[payment.address] = payment.amount;
+      });
+      return amounts;
+    };
 
     // Calculate Amount to Send to Workers
     Object.keys(workers).forEach((address) => {
@@ -661,9 +687,13 @@ const PoolPayments = function (logger, client) {
 
       // Determine Amounts Given Mininum Payment
       if (amount >= processingConfig.payments.minPaymentSatoshis) {
-        worker.sent = utils.satoshisToCoins(amount, processingConfig.payments.magnitude, processingConfig.payments.coinPrecision);
-        amounts[address] = utils.coinsRound(worker.sent, processingConfig.payments.coinPrecision);
-        totalSent += worker.sent;
+        const payment = utils.satoshisToCoins(amount, processingConfig.payments.magnitude, processingConfig.payments.coinPrecision);
+        worker.sent = 0;
+        worker.change = amount;
+        payments.push({
+          address: address,
+          amount: utils.coinsRound(payment, processingConfig.payments.coinPrecision),
+        });
       } else {
         worker.sent = 0;
         worker.change = amount;
@@ -673,61 +703,80 @@ const PoolPayments = function (logger, client) {
     });
 
     // Check if No Workers/Rounds
-    if (Object.keys(amounts).length === 0) {
+    if (payments.length === 0) {
       callback(null, [rounds, workers]);
       return;
     }
 
     // Send Payments to Workers Through Daemon
-    const rpcTracking = `sendmany "" ${ JSON.stringify(amounts) }`;
-    daemon.cmd('sendmany', ['', amounts], true, (result) => {
+    const sendPaymentBatch = function(paymentBatch, callbackBatch) {
+      const amounts = buildAmounts(paymentBatch);
+      const rpcTracking = `sendmany "" ${ JSON.stringify(amounts) }`;
+      daemon.cmd('sendmany', ['', amounts], true, (result) => {
 
-      // Check Error Edge Cases
-      if (result.error && result.error.code === -5) {
-        logger.warning('Payments', pool, rpcTracking);
-        logger.error('Payments', pool, `Error sending payments ${ JSON.stringify(result.error)}`);
+        // Split oversized transactions until each retry is small enough for the wallet.
+        if (result.error && isTransactionTooLarge(result.error) && paymentBatch.length > 1) {
+          const splitIndex = Math.ceil(paymentBatch.length / 2);
+          logger.warning('Payments', pool, rpcTracking);
+          logger.warning('Payments', pool, `Payment transaction too large; splitting ${ paymentBatch.length } outputs into ${ splitIndex } and ${ paymentBatch.length - splitIndex } output batches.`);
+          sendPaymentBatch(paymentBatch.slice(0, splitIndex), (error) => {
+            if (error) {
+              callbackBatch(error);
+              return;
+            }
+            sendPaymentBatch(paymentBatch.slice(splitIndex), callbackBatch);
+          });
+          return;
+        }
+
+        // Check Error Edge Cases
+        if (result.error) {
+          logPaymentError(rpcTracking, result.error);
+          callbackBatch(true);
+          return;
+        }
+
+        // Handle Returned Transaction ID
+        if (result.response) {
+          const transaction = result.response;
+          const currentDate = Date.now();
+          let batchSent = 0;
+          paymentBatch.forEach((payment) => {
+            workers[payment.address].sent = payment.amount;
+            workers[payment.address].change = 0;
+            batchSent = utils.coinsRound(batchSent + payment.amount, processingConfig.payments.coinPrecision);
+          });
+          totalSent = utils.coinsRound(totalSent + batchSent, processingConfig.payments.coinPrecision);
+          const paymentRecord = {
+            time: currentDate,
+            paid: batchSent,
+            miners: paymentBatch.length,
+            transaction: transaction,
+          };
+
+          // Update Redis Database with Payment Record
+          logger.special('Payments', pool, `Sent ${ batchSent } ${ processingConfig.coin.symbol } to ${ paymentBatch.length } workers, txid: ${ transaction }`);
+          commands.push(['zadd', `${ pool }:payments:${ blockType }:records`, dateNow / 1000 | 0, JSON.stringify(paymentRecord)]);
+          callbackBatch(null);
+          return;
+
+        // Invalid/No Transaction ID
+        } else {
+          logger.error('Payments', pool, 'RPC command did not return txid. Disabling payments to prevent possible double-payouts');
+          callbackBatch(true);
+          return;
+        }
+      });
+    };
+
+    sendPaymentBatch(payments, (error) => {
+      if (error && totalSent === 0) {
         callback(true, []);
         return;
-      } else if (result.error && result.error.code === -6) {
-        logger.warning('Payments', pool, rpcTracking);
-        logger.error('Payments', pool, `Insufficient funds for payments: ${ JSON.stringify(result.error)}`);
-        callback(true, []);
-        return;
-      } else if (result.error && result.error.message != null) {
-        logger.warning('Payments', pool, rpcTracking);
-        logger.error('Payments', pool, `Error sending payments ${ JSON.stringify(result.error)}`);
-        callback(true, []);
-        return;
-      } else if (result.error) {
-        logger.warning('Payments', pool, rpcTracking);
-        logger.error('Payments', pool, `Error sending payments ${ JSON.stringify(result.error)}`);
-        callback(true, []);
-        return;
+      } else if (error) {
+        logger.error('Payments', pool, 'Some payment batches failed after earlier batches were sent; unpaid workers will remain in balances for a later retry.');
       }
-
-      // Handle Returned Transaction ID
-      if (result.response) {
-        const transaction = result.response;
-        const currentDate = Date.now();
-        const payments = {
-          time: currentDate,
-          paid: totalSent,
-          miners: Object.keys(amounts).length,
-          transaction: transaction,
-        };
-
-        // Update Redis Database with Payment Record
-        logger.special('Payments', pool, `Sent ${ totalSent } ${ processingConfig.coin.symbol } to ${ Object.keys(amounts).length } workers, txid: ${ transaction }`);
-        commands.push(['zadd', `${ pool }:payments:${ blockType }:records`, dateNow / 1000 | 0, JSON.stringify(payments)]);
-        callback(null, [rounds, workers, commands]);
-        return;
-
-      // Invalid/No Transaction ID
-      } else {
-        logger.error('Payments', pool, 'RPC command did not return txid. Disabling payments to prevent possible double-payouts');
-        callback(true, []);
-        return;
-      }
+      callback(null, [rounds, workers, commands]);
     });
   };
 
