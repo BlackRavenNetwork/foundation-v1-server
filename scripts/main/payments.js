@@ -559,7 +559,8 @@ const PoolPayments = function (logger, client) {
     });
 
     // Add to Total Owed from Unpaid
-    Object.keys(data[1]).forEach((worker) => {
+    Object.keys(data[1]).forEach((address) => {
+      const worker = data[1][address] || {};
       totalOwed += worker.balance || 0;
     });
 

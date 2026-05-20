@@ -1155,6 +1155,26 @@ describe('Test payments functionality', () => {
     });
   });
 
+  test('Test calculation of currency owed includes unpaid balances', (done) => {
+    mockDaemon.mockListUnspent();
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const poolPayments = new PoolPayments(logger, client);
+    poolPayments.poolConfigs['Pool1'].primary.payments.magnitude = 100000000;
+    poolPayments.poolConfigs['Pool1'].primary.payments.minPaymentSatoshis = 500000;
+    poolPayments.poolConfigs['Pool1'].primary.payments.coinPrecision = 8;
+    poolPayments.poolConfigs['Pool1'].primary.payments.processingFee = parseFloat(0.0004);
+    const daemon = new Stratum.daemon([poolConfig.primary.payments.daemon], () => {});
+    const config = poolPayments.poolConfigs['Pool1'];
+    const workers = { worker1: { balance: 2500000000 }};
+    poolPayments.handleOwed(daemon, config, 'payments', 'primary', [[], workers, [], [], []], (error, results) => {
+      expect(error).toBe(null);
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching('Insufficient funds'));
+      expect(results[1]).toStrictEqual(workers);
+      console.log.mockClear();
+      done();
+    });
+  });
+
   test('Test calculation of currency owed [6]', (done) => {
     mockDaemon.mockListUnspent();
     const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
