@@ -747,10 +747,14 @@ const PoolPayments = function (logger, client) {
       // Determine Amounts Given Mininum Payment
       if (amount >= processingConfig.payments.minPaymentSatoshis) {
         worker.sent = 0;
+        worker.sentSatoshis = 0;
+        worker.owedSatoshis = amount;
         worker.change = amount;
         queuePayments(address, amount);
       } else {
         worker.sent = 0;
+        worker.sentSatoshis = 0;
+        worker.owedSatoshis = amount;
         worker.change = amount;
       }
 
@@ -824,6 +828,7 @@ const PoolPayments = function (logger, client) {
           let batchSent = 0;
           paymentBatch.forEach((payment) => {
             workers[payment.address].sent = utils.coinsRound((workers[payment.address].sent || 0) + payment.amount, processingConfig.payments.coinPrecision);
+            workers[payment.address].sentSatoshis = (workers[payment.address].sentSatoshis || 0) + payment.satoshis;
             workers[payment.address].change = Math.max(0, (workers[payment.address].change || 0) - payment.satoshis);
             batchSent = utils.coinsRound(batchSent + payment.amount, processingConfig.payments.coinPrecision);
           });
@@ -882,8 +887,11 @@ const PoolPayments = function (logger, client) {
         if (worker.sent > 0) {
           const sent = utils.coinsRound(worker.sent, processingConfig.payments.coinPrecision);
           totalPaid = utils.coinsRound(totalPaid + worker.sent, processingConfig.payments.coinPrecision);
+          const changeSatoshis = worker.sentSatoshis > 0 ?
+            Math.max(0, (worker.owedSatoshis || worker.change || 0) - worker.sentSatoshis) :
+            (worker.change || 0);
           const change = utils.coinsRound(
-            utils.satoshisToCoins(worker.change || 0, processingConfig.payments.magnitude, processingConfig.payments.coinPrecision),
+            utils.satoshisToCoins(changeSatoshis, processingConfig.payments.magnitude, processingConfig.payments.coinPrecision),
             processingConfig.payments.coinPrecision);
           commands.push(['hincrbyfloat', `${ pool }:payments:${ blockType }:paid`, address, sent]);
           commands.push(['hset', `${ pool }:payments:${ blockType }:balances`, address, change]);
