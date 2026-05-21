@@ -1315,10 +1315,60 @@ describe('Test payments functionality', () => {
     const daemon = new Stratum.daemon([poolConfig.primary.payments.daemon], () => {});
     const config = poolPayments.poolConfigs['Pool1'];
     const expected = [
-      ["zadd", "Pool1:payments:primary:records", 1637878085, "{\"time\":1637878085886,\"paid\":117.12181095,\"miners\":3,\"transaction\":\"transactionID\"}"]];
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":117.12181095,"miners":3,"transaction":"transactionID"}']];
     poolPayments.handleSending(daemon, config, 'primary', [mockPayments.rounds, mockPayments.workers1], (error, results) => {
       expect(error).toBe(null);
       expect(results.length).toBe(3);
+      expect(results[2]).toStrictEqual(expected);
+      nock.cleanAll();
+      console.log.mockClear();
+      done();
+    });
+  });
+
+  test('Test sending currency through daemon splits transactions that are too large', (done) => {
+    mockDaemon.mockSendManyTransactionTooLarge();
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const poolPayments = new PoolPayments(logger, client);
+    poolPayments.poolConfigs['Pool1'].primary.payments.magnitude = 100000000;
+    poolPayments.poolConfigs['Pool1'].primary.payments.minPaymentSatoshis = 500000;
+    poolPayments.poolConfigs['Pool1'].primary.payments.coinPrecision = 8;
+    poolPayments.poolConfigs['Pool1'].primary.payments.processingFee = parseFloat(0.0004);
+    const daemon = new Stratum.daemon([poolConfig.primary.payments.daemon], () => {});
+    const config = poolPayments.poolConfigs['Pool1'];
+    const expected = [
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":80.44526093,"miners":2,"transaction":"transactionID1"}'],
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":36.67655002,"miners":1,"transaction":"transactionID2"}']];
+    poolPayments.handleSending(daemon, config, 'primary', [mockPayments.rounds, mockPayments.workers1], (error, results) => {
+      expect(error).toBe(null);
+      expect(results.length).toBe(3);
+      expect(results[2]).toStrictEqual(expected);
+      nock.cleanAll();
+      console.log.mockClear();
+      done();
+    });
+  });
+
+  test('Test sending currency through daemon splits payments by configured batch amount', (done) => {
+    mockDaemon.mockSendManySequential();
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const poolPayments = new PoolPayments(logger, client);
+    poolPayments.poolConfigs['Pool1'].primary.payments.magnitude = 100000000;
+    poolPayments.poolConfigs['Pool1'].primary.payments.minPaymentSatoshis = 500000;
+    poolPayments.poolConfigs['Pool1'].primary.payments.coinPrecision = 8;
+    poolPayments.poolConfigs['Pool1'].primary.payments.maxBatchAmount = 50;
+    poolPayments.poolConfigs['Pool1'].primary.payments.processingFee = parseFloat(0.0004);
+    const daemon = new Stratum.daemon([poolConfig.primary.payments.daemon], () => {});
+    const config = poolPayments.poolConfigs['Pool1'];
+    const workers = { example1: { balance: 12500000000 }};
+    const expected = [
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":50,"miners":1,"transaction":"transactionID1"}'],
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":50,"miners":1,"transaction":"transactionID2"}'],
+      ['zadd', 'Pool1:payments:primary:records', 1637878085, '{"time":1637878085886,"paid":25,"miners":1,"transaction":"transactionID3"}']];
+    poolPayments.handleSending(daemon, config, 'primary', [mockPayments.rounds, workers], (error, results) => {
+      expect(error).toBe(null);
+      expect(results[1].example1.sent).toBe(125);
+      expect(results[1].example1.change).toBe(0);
       expect(results[2]).toStrictEqual(expected);
       nock.cleanAll();
       console.log.mockClear();
@@ -1650,7 +1700,7 @@ describe('Test payments functionality', () => {
     const workers = { 'example1': { sent: 12.5, change: 150000 }};
     const expected = [
       ['hincrbyfloat', 'Pool1:payments:primary:paid', 'example1', 12.5],
-      ['hset', 'Pool1:payments:primary:balances', 'example1', 0],
+      ['hset', 'Pool1:payments:primary:balances', 'example1', 0.0015],
       ['hset', 'Pool1:payments:primary:generate', 'example1', 0],
       ['hset', 'Pool1:payments:primary:immature', 'example1', 0],
       ['smove', 'Pool1:blocks:primary:pending', 'Pool1:blocks:primary:confirmed', 'serialized'],
