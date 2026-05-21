@@ -808,6 +808,21 @@ exports.mockSendManyTransactionTooLarge = function() {
     });
 };
 
+exports.mockSendManySequential = function() {
+  let calls = 0;
+  nock('http://127.0.0.1:8332')
+    .persist()
+    .post('/', body => body.method === 'sendmany')
+    .reply(200, () => {
+      calls += 1;
+      return JSON.stringify({
+        id: 'nocktest',
+        result: `transactionID${ calls }`,
+        error: null,
+      });
+    });
+};
+
 exports.mockSendManyError1 = function() {
   nock('http://127.0.0.1:8332')
     .persist()
